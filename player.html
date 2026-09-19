@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Vinylo — Player</title>
+<!--
+  Pour lire ta vraie bibliothèque :
+  1. Génère data/library.json avec build_library.py à la racine de ton repo
+  2. Sers ce dossier en local : python -m http.server (dans le dossier du repo, ce fichier doit être à côté de music/ et data/)
+  3. Ouvre http://localhost:8000/player.html — le lecteur détecte automatiquement data/library.json
+  Sans ce fichier (ex: dans l'aperçu Claude), le lecteur retombe sur une bibliothèque de démonstration.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  :root {
+    box-sizing: border-box;
+    --bg: #121014;
+    --bg-elevated: #1b1820;
+    --bg-panel: #1f1c25;
+    --border: #2b2732;
+    --accent: #d9a441;
+    --accent-soft: #f0c97a;
+    --text: #f5f1e8;
+    --text-dim: #9b93a3;
+    --text-faint: #635d6c;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); height: 100%; }
+  body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  #root { height: 100vh; height: 100dvh; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #2f2b38; border-radius: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  .app {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    grid-template-rows: 1fr 88px;
+    grid-template-areas: "sidebar main" "player player";
+    height: 100%;
+    position: relative;
+  }
+  @media (max-width: 780px) {
+    .app { grid-template-columns: 0 1fr; }
+    .sidebar { position: fixed; z-index: 40; left: 0; top: 0; bottom: 0; width: 240px;
+      transform: translateX(-100%); transition: transform .28s ease; box-shadow: 20px 0 40px rgba(0,0,0,.4); }
+    .sidebar.open { transform: translateX(0); }
+    .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 30; opacity: 0; pointer-events: none; transition: opacity .25s; }
+    .scrim.show { opacity: 1; pointer-events: auto; }
+  }
+
+  /* Sidebar */
+  .sidebar {
+    grid-area: sidebar;
+    background: var(--bg-elevated);
+    border-right: 1px solid var(--border);
+    padding: 22px 14px;
+    padding-top: calc(22px + env(safe-area-inset-top, 0px));
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    overflow-y: auto;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, var(--accent-soft), var(--accent) 60%, #7a5a1e 100%);
+    box-shadow: inset 0 0 0 6px rgba(18,16,20,.55);
+  }
+  .brand-name { font-family: 'Fraunces', serif; font-size: 19px; font-weight: 600; letter-spacing: .2px; }
+
+  .nav-group { display: flex; flex-direction: column; gap: 2px; }
+  .nav-label { font-size: 11px; color: var(--text-faint); padding: 0 10px; margin-bottom: 6px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 8px; cursor: pointer;
+    color: var(--text-dim); font-size: 14px; font-weight: 500;
+    border: none; background: none; text-align: left; width: 100%;
+  }
+  .nav-item svg { flex-shrink: 0; opacity: .8; }
+  .nav-item:hover { background: rgba(255,255,255,.04); color: var(--text); }
+  .nav-item.active { background: var(--bg-panel); color: var(--text); }
+  .nav-item.active svg { opacity: 1; stroke: var(--accent); }
+
+  .artist-list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
+  .artist-row {
+    padding: 7px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px;
+    color: var(--text-dim); border: none; background: none; text-align: left; width: 100%;
+  }
+  .artist-row:hover { color: var(--text); background: rgba(255,255,255,.04); }
+  .artist-row.active { color: var(--accent-soft); }
+
+  /* Main */
+  .main {
+    grid-area: main;
+    overflow-y: auto;
+    position: relative;
+  }
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 14px;
+    padding: 16px 28px;
+    padding-top: calc(16px + env(safe-area-inset-top, 0px));
+    background: linear-gradient(var(--bg) 60%, transparent);
+    backdrop-filter: blur(6px);
+  }
+  .menu-btn { display: none; background: none; border: none; color: var(--text); padding: 4px; cursor: pointer; }
+  @media (max-width: 780px) { .menu-btn { display: block; } }
+  .search-box {
+    flex: 1; max-width: 380px;
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 999px; padding: 9px 14px;
+  }
+  .search-box svg { color: var(--text-faint); flex-shrink: 0; }
+  .search-box input {
+    background: none; border: none; outline: none; color: var(--text);
+    font-family: 'Inter', sans-serif; font-size: 13.5px; width: 100%;
+  }
+  .search-box input::placeholder { color: var(--text-faint); }
+  .lib-status { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+  @media (max-width: 640px) { .lib-status { display: none; } }
+  .lib-status.real { color: var(--accent-soft); }
+
+  .content { padding: 8px 28px 40px; }
+  .section-title {
+    font-family: 'Fraunces', serif; font-weight: 600; font-size: 26px;
+    margin: 18px 0 16px; letter-spacing: .2px;
+  }
+
+  .album-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 20px;
+  }
+  .album-card { cursor: pointer; border: none; background: none; padding: 0; text-align: left; }
+  .album-card:hover .cover-wrap { transform: translateY(-3px); box-shadow: 0 14px 28px rgba(0,0,0,.45), 0 0 0 1px rgba(217,164,65,.25); }
+  .cover-wrap { border-radius: 10px; overflow: hidden; transition: transform .18s ease, box-shadow .18s ease; position: relative; aspect-ratio: 1; }
+  .cover-wrap.round { border-radius: 50%; }
+  .album-card .meta-title { margin-top: 10px; font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.25; }
+  .album-card .meta-sub { font-size: 12.5px; color: var(--text-dim); margin-top: 2px; }
+
+  .cover-svg { width: 100%; height: 100%; display: block; }
+  .cover-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .cover-play {
+    position: absolute; right: 8px; bottom: 8px;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--accent); color: #201705;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transform: translateY(6px);
+    transition: opacity .15s, transform .15s;
+    border: none; cursor: pointer;
+  }
+  .album-card:hover .cover-play, .track-row:hover .cover-play { opacity: 1; transform: translateY(0); }
+
+  /* Album detail */
+  .album-header { display: flex; gap: 26px; align-items: flex-end; margin: 10px 0 26px; flex-wrap: wrap; }
+  .album-header .cover-wrap { width: 190px; flex-shrink: 0; box-shadow: 0 18px 40px rgba(0,0,0,.5); }
+  .album-header h1 { font-family: 'Fraunces', serif; font-size: clamp(26px, 4vw, 42px); margin: 0 0 8px; font-weight: 600; }
+  .album-header .sub { color: var(--text-dim); font-size: 14px; }
+  .play-all {
+    margin-top: 14px; display: inline-flex; align-items: center; gap: 8px;
+    background: var(--accent); color: #201705; border: none;
+    padding: 10px 20px; border-radius: 999px; font-weight: 600; font-size: 13.5px; cursor: pointer;
+  }
+  .play-all:hover { background: var(--accent-soft); }
+
+  .track-list { display: flex; flex-direction: column; }
+  .track-row {
+    display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 14px;
+    padding: 9px 12px; border-radius: 8px; cursor: pointer; position: relative;
+  }
+  .track-row:hover { background: rgba(255,255,255,.045); }
+  .track-row.playing { background: rgba(217,164,65,.1); }
+  .track-num { color: var(--text-faint); font-size: 13px; text-align: center; }
+  .track-row.playing .track-num { color: var(--accent); }
+  .track-title { font-size: 14.5px; color: var(--text); }
+  .track-row.playing .track-title { color: var(--accent-soft); }
+  .track-dur { color: var(--text-faint); font-size: 12.5px; }
+
+  /* Now playing bar */
+  .player-bar {
+    grid-area: player;
+    background: var(--bg-elevated);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 18px;
+    padding: 0 18px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .now-track { display: flex; align-items: center; gap: 12px; width: 240px; min-width: 0; cursor: pointer; }
+  .now-track .cover-wrap { width: 48px; height: 48px; flex-shrink: 0; border-radius: 6px; }
+  .now-track .info { min-width: 0; }
+  .now-track .title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .now-track .artist { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .transport { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 560px; margin: 0 auto; }
+  .transport-btns { display: flex; align-items: center; gap: 18px; }
+  .transport-btns button { background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 4px; }
+  .transport-btns button:hover { color: var(--text); }
+  .play-btn {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--text);
+    display: flex; align-items: center; justify-content: center; color: var(--bg) !important;
+  }
+  .play-btn:hover { background: var(--accent-soft) !important; }
+  .seek-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+  .seek-row span { font-size: 11px; color: var(--text-faint); width: 34px; text-align: center; }
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px;
+    background: #35313e; flex: 1; cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 11px; height: 11px; border-radius: 50%;
+    background: var(--text); cursor: pointer; opacity: 0;
+  }
+  .seek-row:hover input[type="range"]::-webkit-slider-thumb, .volume-row:hover input[type="range"]::-webkit-slider-thumb { opacity: 1; }
+  .seek-row input[type="range"] { accent-color: var(--accent-soft); }
+
+  .side-controls { width: 240px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+  .volume-row { display: none; align-items: center; gap: 8px; width: 110px; }
+  @media (min-width: 900px) { .volume-row { display: flex; } }
+  .icon-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 4px; }
+  .icon-btn:hover { color: var(--text); }
+  .icon-btn.active { color: var(--accent); }
+
+  /* Now playing full screen */
+  .now-full {
+    position: fixed; inset: 0; z-index: 50;
+    background: radial-gradient(1200px 800px at 50% -10%, #23202b, var(--bg) 60%);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 24px; padding-top: calc(24px + env(safe-area-inset-top, 0px));
+    animation: fadeIn .22s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px);} to { opacity: 1; transform: translateY(0);} }
+  .now-full-close { align-self: flex-start; background: none; border: none; color: var(--text-dim); cursor: pointer; }
+  .now-full-body { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; width: 100%; max-width: 420px; }
+  .vinyl-wrap { width: min(66vw, 300px); aspect-ratio: 1; }
+  .vinyl-wrap svg { width: 100%; height: 100%; }
+  .spin { animation: spin 14s linear infinite; }
+  .spin.paused { animation-play-state: paused; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+  .now-full-title { font-family: 'Fraunces', serif; font-size: 24px; font-weight: 600; text-align: center; }
+  .now-full-artist { color: var(--text-dim); font-size: 14.5px; text-align: center; margin-top: 4px; }
+
+  .empty-hint { color: var(--text-faint); font-size: 13px; padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const {useState, useMemo, useRef, useEffect, useCallback} = React;
+
+/* ---------- Icons ---------- */
+const Icon = ({d, size=18, filled=false, stroke=true, children}) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"}
+       stroke={stroke ? "currentColor" : "none"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    {children || <path d={d} />}
+  </svg>
+);
+const HomeIcon = (p) => <Icon {...p} d="M4 11.5 12 4l8 7.5M6 10v9a1 1 0 0 0 1 1h4v-6h2v6h4a1 1 0 0 0 1-1v-9" />;
+const SearchIcon = (p) => <Icon {...p}><circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.5-4.5"/></Icon>;
+const PlayIcon = (p) => <Icon {...p} filled stroke={false}><path d="M7 5.5v13l11-6.5-11-6.5z"/></Icon>;
+const PauseIcon = (p) => <Icon {...p} filled stroke={false}><rect x="6.5" y="5" width="4" height="14" rx="1"/><rect x="13.5" y="5" width="4" height="14" rx="1"/></Icon>;
+const PrevIcon = (p) => <Icon {...p} filled stroke={false}><path d="M6 5h2v14H6zM19 6.2 9 12l10 5.8V6.2z"/></Icon>;
+const NextIcon = (p) => <Icon {...p} filled stroke={false}><path d="M18 5h-2v14h2zM5 6.2 15 12 5 17.8V6.2z"/></Icon>;
+const VolumeIcon = (p) => <Icon {...p}><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></Icon>;
+const MenuIcon = (p) => <Icon {...p}><path d="M4 6h16M4 12h16M4 18h16"/></Icon>;
+const CloseIcon = (p) => <Icon {...p}><path d="M6 6l12 12M18 6L6 18"/></Icon>;
+const ShuffleIcon = (p) => <Icon {...p}><path d="M4 6h3.5L15 16h4.5M4 18h3.5L11 13"/><path d="M17 4l3 2.4L17 8.6M17 15.4l3 2.4-3 2.4"/></Icon>;
+
+/* ---------- Helpers ---------- */
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+  return Math.abs(h);
+}
+function slugify(s) {
+  const base = (s || "").toString().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  const slug = base.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase();
+  return slug || "untitled";
+}
+function fmtTime(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  const m = Math.floor(s / 60), sec = s % 60;
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+function trackSrc(track) {
+  if (!track || !track.path || !track.file) return null;
+  return encodeURI(`${track.path}/${track.file}`);
+}
+
+/* ---------- Procedural cover art (fallback when no cover.jpg) ---------- */
+function CoverArt({ seed, letter, round=false }) {
+  const h = hashStr(seed || "?");
+  const hue1 = h % 360;
+  const hue2 = (hue1 + 46 + (h % 30)) % 360;
+  const id = "g" + h;
+  const rot = h % 360;
+  return (
+    <div className={"cover-wrap" + (round ? " round" : "")}>
+      <svg className="cover-svg" viewBox="0 0 200 200" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <linearGradient id={id} x1="0%" y1="0%" x2="100%" y2="100%" gradientTransform={`rotate(${rot} 0.5 0.5)`}>
+            <stop offset="0%" stopColor={`hsl(${hue1} 55% 22%)`} />
+            <stop offset="55%" stopColor={`hsl(${hue2} 60% 34%)`} />
+            <stop offset="100%" stopColor={`hsl(${hue1} 50% 14%)`} />
+          </linearGradient>
+        </defs>
+        <rect width="200" height="200" fill={`url(#${id})`} />
+        <circle cx="150" cy="45" r="70" fill={`hsl(${hue2} 65% 55%)`} opacity="0.12" />
+        <circle cx="30" cy="165" r="55" fill={`hsl(${hue1} 65% 60%)`} opacity="0.14" />
+        <text x="100" y="128" fontFamily="Fraunces, serif" fontSize="92" fontWeight="600"
+              textAnchor="middle" fill="#f5f1e8" opacity="0.9">{letter}</text>
+      </svg>
+    </div>
+  );
+}
+
+/* Real cover.jpg when available (local/self-hosted), falls back to generated art */
+function AlbumCover({ album, round=false }) {
+  const hasRealCover = Boolean(album && album.cover && album.path);
+  const [broken, setBroken] = useState(false);
+  const letter = ((album && (album.title || album.artist)) || "?")[0];
+  if (hasRealCover && !broken) {
+    return (
+      <div className={"cover-wrap" + (round ? " round" : "")}>
+        <img className="cover-img" alt={album.title || ""}
+             src={encodeURI(`${album.path}/${album.cover}`)}
+             onError={() => setBroken(true)} />
+      </div>
+    );
+  }
+  return <CoverArt seed={album ? album.id : "?"} letter={letter} round={round} />;
+}
+
+/* ---------- Demo library (used until data/library.json is found) ---------- */
+const RAW_LIBRARY = [
+  { artist: "Nova Ondine", albums: [
+    { title: "Marées Basses", year: 2023, genre: "Électronique", tracks: [
+      ["Sel et Silence", 214], ["Ressac", 187], ["Lumière Froide", 251], ["Étale", 172], ["Marée Basses (reprise)", 198],
+    ]},
+    { title: "Vers le Large", year: 2021, genre: "Électronique", tracks: [
+      ["Cap au Nord", 203], ["Dérive", 240], ["Horizon", 178], ["Vers le Large", 265],
+    ]},
+  ]},
+  { artist: "Les Heures Grises", albums: [
+    { title: "Chambre 6", year: 2022, genre: "Indie Folk", tracks: [
+      ["Matin Pâle", 165], ["Chambre 6", 210], ["Le Poêle", 190], ["Rideaux Tirés", 222], ["Fin d'Octobre", 176],
+    ]},
+    { title: "Sur le Rebord", year: 2024, genre: "Indie Folk", tracks: [
+      ["Sur le Rebord", 198], ["Balcon", 156], ["Pluie Fine", 233],
+    ]},
+  ]},
+  { artist: "Kaïros", albums: [
+    { title: "Point Zéro", year: 2020, genre: "Ambient", tracks: [
+      ["Prélude", 96], ["Point Zéro", 312], ["Seuil", 204], ["Rémanence", 268], ["Après", 145],
+    ]},
+  ]},
+  { artist: "Iris Marbre", albums: [
+    { title: "Terre Cuite", year: 2023, genre: "Pop", tracks: [
+      ["Terre Cuite", 187], ["Argile", 201], ["Été Long", 179], ["Sable Chaud", 195], ["Verni", 168], ["Four", 224],
+    ]},
+    { title: "Encore Un Peu", year: 2025, genre: "Pop", tracks: [
+      ["Encore Un Peu", 210], ["Trop Tard", 183], ["Sur le Fil", 199], ["Dernier Metro", 231],
+    ]},
+  ]},
+];
+
+function buildDemoLibrary() {
+  const albums = [];
+  RAW_LIBRARY.forEach(a => {
+    a.albums.forEach(al => {
+      const albumId = `${slugify(a.artist)}__${slugify(al.title)}`;
+      const tracks = al.tracks.map((t, i) => ({
+        id: `${albumId}__${i}`,
+        title: t[0], duration: t[1], track: i + 1,
+        artist: a.artist, album: al.title, albumId,
+        cover: undefined, path: undefined,
+      }));
+      albums.push({
+        id: albumId, title: al.title, artist: a.artist, year: al.year, genre: al.genre,
+        cover: undefined, path: undefined, tracks,
+      });
+    });
+  });
+  return { artists: RAW_LIBRARY.map(a => a.artist), albums };
+}
+const DEMO_LIBRARY = buildDemoLibrary();
+
+/* Normalizes a data/library.json payload (as produced by build_library.py)
+   into the shape the UI expects. */
+function normalizeRealLibrary(data) {
+  const albums = (data.albums || []).map(al => {
+    const title = al.album || al.title || "Sans titre";
+    const id = al.id || `${slugify(al.artist)}__${slugify(title)}`;
+    const tracks = (al.tracks || []).map((t, i) => ({
+      id: `${id}__${i}`,
+      title: t.title || t.file || "Sans titre",
+      file: t.file,
+      track: t.track || i + 1,
+      duration: t.duration || 0,
+      artist: al.artist,
+      album: title,
+      albumId: id,
+      cover: al.cover,
+      path: al.path,
+    }));
+    return {
+      id, title, artist: al.artist, year: al.year, genre: al.genre,
+      cover: al.cover, path: al.path, tracks,
+    };
+  });
+  const artists = (data.artists && data.artists.length)
+    ? data.artists
+    : [...new Set(albums.map(a => a.artist))];
+  return { artists, albums };
+}
+
+/* ---------- App ---------- */
+function App() {
+  const [library, setLibrary] = useState(DEMO_LIBRARY);
+  const [libStatus, setLibStatus] = useState("demo"); // 'loading' | 'demo' | 'real'
+  const [view, setView] = useState({ kind: "home" });
+  const [query, setQuery] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showFull, setShowFull] = useState(false);
+
+  const [queue, setQueue] = useState([]);
+  const [queueIndex, setQueueIndex] = useState(-1);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [volume, setVolume] = useState(70);
+
+  const currentTrack = queueIndex >= 0 ? queue[queueIndex] : null;
+  const audioRef = useRef(null);
+  const goNextRef = useRef(() => {});
+
+  // Try to load the real library once on mount
+  useEffect(() => {
+    let cancelled = false;
+    setLibStatus("loading");
+    fetch("data/library.json", { cache: "no-store" })
+      .then(r => { if (!r.ok) throw new Error("no library.json"); return r.json(); })
+      .then(data => {
+        if (cancelled) return;
+        const normalized = normalizeRealLibrary(data);
+        if (normalized.albums.length === 0) throw new Error("empty library");
+        setLibrary(normalized);
+        setLibStatus("real");
+      })
+      .catch(() => { if (!cancelled) setLibStatus("demo"); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const filteredAlbums = useMemo(() => {
+    if (!query.trim()) return library.albums;
+    const q = query.toLowerCase();
+    return library.albums.filter(al =>
+      al.title.toLowerCase().includes(q) || al.artist.toLowerCase().includes(q) ||
+      al.tracks.some(t => t.title.toLowerCase().includes(q))
+    );
+  }, [query, library]);
+
+  const playAlbum = useCallback((album, startIndex = 0) => {
+    setQueue(album.tracks);
+    setQueueIndex(startIndex);
+    setProgress(0);
+    setIsPlaying(true);
+  }, []);
+
+  const togglePlay = useCallback(() => {
+    if (!currentTrack) return;
+    setIsPlaying(p => !p);
+  }, [currentTrack]);
+
+  const goNext = useCallback(() => {
+    setQueueIndex(i => {
+      if (i < 0 || i + 1 >= queue.length) { setIsPlaying(false); return i; }
+      setProgress(0);
+      return i + 1;
+    });
+  }, [queue.length]);
+  useEffect(() => { goNextRef.current = goNext; }, [goNext]);
+
+  const goPrev = useCallback(() => {
+    setQueueIndex(i => (i <= 0 ? i : i - 1));
+    setProgress(0);
+  }, []);
+
+  const handleSeek = useCallback((value) => {
+    setProgress(value);
+    const audio = audioRef.current;
+    if (audio && currentTrack && currentTrack.path) {
+      audio.currentTime = value;
+    }
+  }, [currentTrack]);
+
+  // Create the audio element once
+  useEffect(() => {
+    const audio = new Audio();
+    audio.volume = volume / 100;
+    audioRef.current = audio;
+    const onTime = () => setProgress(audio.currentTime);
+    const onEnded = () => goNextRef.current();
+    const onError = () => setIsPlaying(false);
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("ended", onEnded);
+    audio.addEventListener("error", onError);
+    return () => {
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("error", onError);
+      audio.pause();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Apply volume changes
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = volume / 100;
+  }, [volume]);
+
+  // Load real track's source whenever it changes
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const src = trackSrc(currentTrack);
+    if (!src) { audio.pause(); audio.removeAttribute("src"); return; }
+    audio.src = src;
+    audio.currentTime = 0;
+    if (isPlaying) audio.play().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTrack && currentTrack.id]);
+
+  // Play/pause a real track when isPlaying toggles
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !currentTrack || !currentTrack.path) return;
+    if (isPlaying) audio.play().catch(() => {});
+    else audio.pause();
+  }, [isPlaying]);
+
+  // Simulated clock for demo tracks (no real audio file to drive progress)
+  useEffect(() => {
+    if (!isPlaying || !currentTrack || currentTrack.path) return;
+    const t = setInterval(() => {
+      setProgress(p => {
+        if (p + 1 >= currentTrack.duration) { goNext(); return 0; }
+        return p + 1;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [isPlaying, currentTrack, goNext]);
+
+  const openAlbum = (album) => { setView({ kind: "album", id: album.id }); setSidebarOpen(false); };
+  const openArtist = (artist) => { setView({ kind: "artist", name: artist }); setSidebarOpen(false); };
+
+  const currentAlbum = view.kind === "album" ? library.albums.find(a => a.id === view.id) : null;
+
+  return (
+    <div className="app">
+      <div className={"scrim" + (sidebarOpen ? " show" : "")} onClick={() => setSidebarOpen(false)} />
+      <Sidebar
+        open={sidebarOpen}
+        artists={library.artists}
+        view={view} setView={setView}
+        onArtist={openArtist}
+      />
+      <div className="main">
+        <div className="topbar">
+          <button className="menu-btn" onClick={() => setSidebarOpen(true)}><MenuIcon /></button>
+          <div className="search-box">
+            <SearchIcon size={16} />
+            <input placeholder="Rechercher un titre, un album, un artiste…"
+                   value={query} onChange={e => { setQuery(e.target.value); if (e.target.value) setView({kind:"search"}); }} />
+          </div>
+          <div className={"lib-status" + (libStatus === "real" ? " real" : "")}>
+            {libStatus === "real" ? "Bibliothèque chargée (data/library.json)" : "Démo — dépose data/library.json pour ta vraie bibliothèque"}
+          </div>
+        </div>
+        <div className="content">
+          {view.kind === "home" && (
+            <Home albums={library.albums} onOpenAlbum={openAlbum} onPlayAlbum={playAlbum} />
+          )}
+          {view.kind === "search" && (
+            <AlbumGrid title={`Résultats pour « ${query} »`} albums={filteredAlbums} onOpenAlbum={openAlbum} onPlayAlbum={playAlbum} />
+          )}
+          {view.kind === "artist" && (
+            <AlbumGrid title={view.name} albums={library.albums.filter(a => a.artist === view.name)} onOpenAlbum={openAlbum} onPlayAlbum={playAlbum} />
+          )}
+          {view.kind === "album" && currentAlbum && (
+            <AlbumDetail album={currentAlbum} currentTrack={currentTrack} isPlaying={isPlaying}
+              onPlayAlbum={playAlbum} onArtist={openArtist}
+              onTrackClick={(idx) => {
+                if (currentTrack && currentTrack.id === currentAlbum.tracks[idx].id) togglePlay();
+                else playAlbum(currentAlbum, idx);
+              }} />
+          )}
+        </div>
+      </div>
+
+      <PlayerBar
+        currentTrack={currentTrack} isPlaying={isPlaying} progress={progress}
+        volume={volume} setVolume={setVolume}
+        onTogglePlay={togglePlay} onNext={goNext} onPrev={goPrev}
+        onSeek={handleSeek}
+        onOpenFull={() => currentTrack && setShowFull(true)}
+      />
+
+      {showFull && currentTrack && (
+        <NowFull track={currentTrack} isPlaying={isPlaying} progress={progress}
+          onClose={() => setShowFull(false)} onTogglePlay={togglePlay}
+          onNext={goNext} onPrev={goPrev} onSeek={handleSeek} />
+      )}
+    </div>
+  );
+}
+
+function Sidebar({ open, artists, view, setView, onArtist }) {
+  return (
+    <div className={"sidebar" + (open ? " open" : "")}>
+      <div className="brand">
+        <div className="brand-mark" />
+        <div className="brand-name">Vinylo</div>
+      </div>
+      <div className="nav-group">
+        <button className={"nav-item" + (view.kind === "home" ? " active" : "")} onClick={() => setView({kind:"home"})}>
+          <HomeIcon /> Accueil
+        </button>
+        <button className={"nav-item" + (view.kind === "search" ? " active" : "")} onClick={() => setView({kind:"search"})}>
+          <SearchIcon /> Rechercher
+        </button>
+      </div>
+      <div className="nav-group">
+        <div className="nav-label">ARTISTES</div>
+        <div className="artist-list">
+          {artists.map(a => (
+            <button key={a} className={"artist-row" + (view.kind === "artist" && view.name === a ? " active" : "")}
+              onClick={() => onArtist(a)}>{a}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Home({ albums, onOpenAlbum, onPlayAlbum }) {
+  return (
+    <div>
+      <div className="section-title">Ajoutés récemment</div>
+      <div className="album-grid">
+        {albums.map(al => <AlbumCard key={al.id} album={al} onOpen={onOpenAlbum} onPlay={onPlayAlbum} />)}
+      </div>
+    </div>
+  );
+}
+
+function AlbumGrid({ title, albums, onOpenAlbum, onPlayAlbum }) {
+  return (
+    <div>
+      <div className="section-title">{title}</div>
+      {albums.length === 0 ? <div className="empty-hint">Aucun résultat.</div> : (
+        <div className="album-grid">
+          {albums.map(al => <AlbumCard key={al.id} album={al} onOpen={onOpenAlbum} onPlay={onPlayAlbum} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AlbumCard({ album, onOpen, onPlay }) {
+  return (
+    <button className="album-card" onClick={() => onOpen(album)}>
+      <div style={{position:"relative"}}>
+        <AlbumCover album={album} />
+        <button className="cover-play" onClick={(e) => { e.stopPropagation(); onPlay(album); }} aria-label="Lire l'album">
+          <PlayIcon size={15} />
+        </button>
+      </div>
+      <div className="meta-title">{album.title}</div>
+      <div className="meta-sub">{album.artist} · {album.year || "—"}</div>
+    </button>
+  );
+}
+
+function AlbumDetail({ album, currentTrack, isPlaying, onPlayAlbum, onTrackClick, onArtist }) {
+  return (
+    <div>
+      <div className="album-header">
+        <AlbumCover album={album} />
+        <div>
+          <div className="sub">Album · {album.genre || "Genre inconnu"} · {album.year || "—"}</div>
+          <h1>{album.title}</h1>
+          <div className="sub" style={{cursor:"pointer"}} onClick={() => onArtist(album.artist)}>{album.artist}</div>
+          <button className="play-all" onClick={() => onPlayAlbum(album)}>
+            <PlayIcon size={14} /> Lire l'album
+          </button>
+        </div>
+      </div>
+      <div className="track-list">
+        {album.tracks.map((t, i) => {
+          const playing = currentTrack && currentTrack.id === t.id;
+          return (
+            <div key={t.id} className={"track-row" + (playing ? " playing" : "")} onClick={() => onTrackClick(i)}>
+              <div className="track-num">{playing && isPlaying ? <PauseIcon size={13} /> : (playing ? <PlayIcon size={12} /> : t.track)}</div>
+              <div className="track-title">{t.title}</div>
+              <div className="track-dur">{fmtTime(t.duration)}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PlayerBar({ currentTrack, isPlaying, progress, volume, setVolume, onTogglePlay, onNext, onPrev, onSeek, onOpenFull }) {
+  const albumLike = currentTrack ? { id: currentTrack.albumId, title: currentTrack.album, cover: currentTrack.cover, path: currentTrack.path } : null;
+  return (
+    <div className="player-bar">
+      <div className="now-track" onClick={onOpenFull}>
+        {currentTrack ? (
+          <>
+            <AlbumCover album={albumLike} />
+            <div className="info">
+              <div className="title">{currentTrack.title}</div>
+              <div className="artist">{currentTrack.artist}</div>
+            </div>
+          </>
+        ) : (
+          <div className="artist" style={{color:"var(--text-faint)"}}>Aucun morceau en lecture</div>
+        )}
+      </div>
+
+      <div className="transport">
+        <div className="transport-btns">
+          <button aria-label="Aléatoire"><ShuffleIcon size={15} /></button>
+          <button onClick={onPrev} aria-label="Précédent"><PrevIcon size={17} /></button>
+          <button className="play-btn" onClick={onTogglePlay} aria-label={isPlaying ? "Pause" : "Lecture"}>
+            {isPlaying ? <PauseIcon size={14} /> : <PlayIcon size={14} />}
+          </button>
+          <button onClick={onNext} aria-label="Suivant"><NextIcon size={17} /></button>
+        </div>
+        <div className="seek-row">
+          <span>{fmtTime(progress)}</span>
+          <input type="range" min="0" max={currentTrack ? currentTrack.duration : 100}
+                 value={progress} onChange={e => onSeek(Number(e.target.value))} disabled={!currentTrack} />
+          <span>{fmtTime(currentTrack ? currentTrack.duration : 0)}</span>
+        </div>
+      </div>
+
+      <div className="side-controls">
+        <div className="volume-row">
+          <VolumeIcon size={16} />
+          <input type="range" min="0" max="100" value={volume} onChange={e => setVolume(Number(e.target.value))} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NowFull({ track, isPlaying, progress, onClose, onTogglePlay, onNext, onPrev, onSeek }) {
+  const h = hashStr(track.album || track.id);
+  const hue1 = h % 360, hue2 = (hue1 + 46) % 360;
+  return (
+    <div className="now-full">
+      <button className="now-full-close" onClick={onClose}><CloseIcon size={20} /></button>
+      <div className="now-full-body">
+        <div className="vinyl-wrap">
+          <svg viewBox="0 0 200 200" className={"spin" + (isPlaying ? "" : " paused")}>
+            <circle cx="100" cy="100" r="98" fill="#0c0a0e" />
+            {[...Array(9)].map((_, i) => (
+              <circle key={i} cx="100" cy="100" r={92 - i * 9} fill="none" stroke="#1c1922" strokeWidth="1" />
+            ))}
+            <circle cx="100" cy="100" r="46" fill={`hsl(${hue1} 55% 24%)`} />
+            <circle cx="100" cy="100" r="46" fill={`hsl(${hue2} 55% 30%)`} opacity="0.5" />
+            <text x="100" y="112" fontFamily="Fraunces, serif" fontSize="34" fontWeight="600" textAnchor="middle" fill="#f5f1e8" opacity="0.9">{(track.album || "?")[0]}</text>
+            <circle cx="100" cy="100" r="6" fill="#0c0a0e" />
+          </svg>
+        </div>
+        <div>
+          <div className="now-full-title">{track.title}</div>
+          <div className="now-full-artist">{track.artist} — {track.album}</div>
+        </div>
+        <div style={{width:"100%"}}>
+          <div className="seek-row">
+            <span>{fmtTime(progress)}</span>
+            <input type="range" min="0" max={track.duration} value={progress} onChange={e => onSeek(Number(e.target.value))} />
+            <span>{fmtTime(track.duration)}</span>
+          </div>
+          <div className="transport-btns" style={{justifyContent:"center", marginTop:18}}>
+            <button onClick={onPrev} aria-label="Précédent"><PrevIcon size={20} /></button>
+            <button className="play-btn" style={{width:44, height:44}} onClick={onTogglePlay} aria-label={isPlaying ? "Pause" : "Lecture"}>
+              {isPlaying ? <PauseIcon size={17} /> : <PlayIcon size={17} />}
+            </button>
+            <button onClick={onNext} aria-label="Suivant"><NextIcon size={20} /></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
